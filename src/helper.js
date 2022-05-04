@@ -380,7 +380,7 @@ const addApiKey = async (serverless, options) => {
         await module.exports.associateRestApiWithUsagePlan(stackName, usagePlan, stage, cfn, ag, serverless.cli);
       } catch (error) {
         serverless.cli.consoleLog(`AddApiKey: ${chalk.red(`Failed to add api key the service. Error ${error.message || error}`)}`);
-        if(error.message.includes('Too Many Requests')) {
+        if(error.message.includes('Too Many Requests') || error.code === 'TooManyRequestsException') {
           nextAttempt.push(apiKey);
         }else{
           throw error;
