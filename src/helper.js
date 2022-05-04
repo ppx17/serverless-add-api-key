@@ -305,78 +305,103 @@ const addApiKey = async (serverless, options) => {
   let planName;
   const defaultUsagePlan = resolveDefaultUsagePlan(serverless.service.provider);
 
-  for (let apiKey of apiKeys) {
-    let apiKeyValue = null;
-    const apiKeyName = apiKey.name;
-    // if we have a defined usagePlan object, us it's .name. If it's a string, use that. Otherwise a default.
-    if (apiKey.usagePlan && apiKey.usagePlan.name) {
-      planName = apiKey.usagePlan.name;
-    } else if (defaultUsagePlan.name) {
-      planName = defaultUsagePlan.name;
-    } else {
-      planName = `${apiKeyName}-usage-plan`
-    }
-    // when creating a plan, use the one defined if set, otherwise the default or blank
-    const usagePlanTemplate = (apiKey.usagePlan && (apiKey.usagePlan.quota || apiKey.usagePlan.throttle)) ? apiKey.usagePlan : defaultUsagePlan;
+  let todoApiKeys = apiKeys;
+  const maxAttempts = 20;
 
-    if (apiKey.value) {
-      apiKeyValue = apiKey.value;
-      // if KMS encrypted value configured, encrypt it using KMS
-      if (typeof apiKeyValue === 'object' && apiKeyValue.encrypted) {
-        // use region specified for KMS keys, otherwise take the region from command line
-        const kmsKeyRegion = apiKeyValue.kmsKeyRegion || region;
-        const kms = new AWS.KMS({ apiVersion: '2014-11-01', region: kmsKeyRegion });
-        apiKeyValue = await module.exports.decryptApiKeyValue(apiKeyValue.encrypted, kmsKeyRegion, kms,serverless.cli);
+  for(let attempt = 0; todoApiKeys.length > 0 && attempt < maxAttempts; attempt++) {
+    const nextAttempt = [];
+    for (let apiKey of todoApiKeys) {
+      let apiKeyValue = null;
+      const apiKeyName = apiKey.name;
+      // if we have a defined usagePlan object, us it's .name. If it's a string, use that. Otherwise a default.
+      if (apiKey.usagePlan && apiKey.usagePlan.name) {
+        planName = apiKey.usagePlan.name;
+      } else if (defaultUsagePlan.name) {
+        planName = defaultUsagePlan.name;
+      } else {
+        planName = `${apiKeyName}-usage-plan`
       }
-    }
+      // when creating a plan, use the one defined if set, otherwise the default or blank
+      const usagePlanTemplate = (apiKey.usagePlan && (apiKey.usagePlan.quota || apiKey.usagePlan.throttle)) ? apiKey.usagePlan : defaultUsagePlan;
 
-    try {
-      const apiKey = await module.exports.getApiKey(apiKeyName, ag, serverless.cli);
-      let usagePlan = await module.exports.getUsagePlan(planName, ag, serverless.cli);
-
-      let apiKeyId = null;
-      let usagePlanId = null;
-
-      // if api key doesn't exist, create one.
-      if (!apiKey) {
-        const { id, value } = await module.exports.createKey(
-          apiKeyName, apiKeyValue, ag, serverless.cli
-        );
-        apiKeyId = id;
-        if (!conceal) {
-          results.push({
-            key: apiKeyName,
-            value
-          });
+      if (apiKey.value) {
+        apiKeyValue = apiKey.value;
+        // if KMS encrypted value configured, encrypt it using KMS
+        if (typeof apiKeyValue === 'object' && apiKeyValue.encrypted) {
+          // use region specified for KMS keys, otherwise take the region from command line
+          const kmsKeyRegion = apiKeyValue.kmsKeyRegion || region;
+          const kms = new AWS.KMS({apiVersion: '2014-11-01', region: kmsKeyRegion});
+          apiKeyValue = await module.exports.decryptApiKeyValue(apiKeyValue.encrypted, kmsKeyRegion, kms, serverless.cli);
         }
-      } else {
-        serverless.cli.consoleLog(`AddApiKey: ${chalk.yellow(`Api key ${apiKeyName} already exists, skipping creation.`)}`);
-        apiKeyId = apiKey.id;
       }
 
-      // if usage plan doesn't exist create one and associate the created api key with it.
-      // if usage plan already exists then associate the key with it, if it's not already associated.
-      if (!usagePlan) {
-        usagePlanId = await module.exports.createUsagePlan(
-          planName, ag, serverless.cli, usagePlanTemplate
-        );
-        await module.exports.createUsagePlanKey(apiKeyId, usagePlanId, ag, serverless.cli);
-        usagePlan = { id: usagePlanId, apiStages: [] };
-      } else {
-        serverless.cli.consoleLog(`AddApiKey: ${chalk.yellow(`Usage plan ${planName} already exists, skipping creation.`)}`);
-        usagePlanId = usagePlan.id;
-        const existingKeys = await module.exports.getUsagePlanKeys(usagePlanId, ag, serverless.cli);
-        if (!existingKeys.some(key => key.id === apiKeyId)) {
-          await module.exports.createUsagePlanKey(apiKeyId, usagePlanId, ag, serverless.cli);
+      try {
+        const apiKey = await module.exports.getApiKey(apiKeyName, ag, serverless.cli);
+        let usagePlan = await module.exports.getUsagePlan(planName, ag, serverless.cli);
+
+        let apiKeyId = null;
+        let usagePlanId = null;
+
+        // if api key doesn't exist, create one.
+        if (!apiKey) {
+          const {id, value} = await module.exports.createKey(
+              apiKeyName, apiKeyValue, ag, serverless.cli
+          );
+          apiKeyId = id;
+          if (!conceal) {
+            results.push({
+              key: apiKeyName,
+              value
+            });
+          }
         } else {
-          serverless.cli.consoleLog(`AddApiKey: ${chalk.yellow(`Usage plan ${planName} already has api key associated with it, skipping association.`)}`);
+          serverless.cli.consoleLog(`AddApiKey: ${chalk.yellow(`Api key ${apiKeyName} already exists, skipping creation.`)}`);
+          apiKeyId = apiKey.id;
+        }
+
+        // if usage plan doesn't exist create one and associate the created api key with it.
+        // if usage plan already exists then associate the key with it, if it's not already associated.
+        if (!usagePlan) {
+          usagePlanId = await module.exports.createUsagePlan(
+              planName, ag, serverless.cli, usagePlanTemplate
+          );
+          await module.exports.createUsagePlanKey(apiKeyId, usagePlanId, ag, serverless.cli);
+          usagePlan = {id: usagePlanId, apiStages: []};
+        } else {
+          serverless.cli.consoleLog(`AddApiKey: ${chalk.yellow(`Usage plan ${planName} already exists, skipping creation.`)}`);
+          usagePlanId = usagePlan.id;
+          const existingKeys = await module.exports.getUsagePlanKeys(usagePlanId, ag, serverless.cli);
+          if (!existingKeys.some(key => key.id === apiKeyId)) {
+            await module.exports.createUsagePlanKey(apiKeyId, usagePlanId, ag, serverless.cli);
+          } else {
+            serverless.cli.consoleLog(`AddApiKey: ${chalk.yellow(`Usage plan ${planName} already has api key associated with it, skipping association.`)}`);
+          }
+        }
+        await module.exports.associateRestApiWithUsagePlan(stackName, usagePlan, stage, cfn, ag, serverless.cli);
+      } catch (error) {
+        serverless.cli.consoleLog(`AddApiKey: ${chalk.red(`Failed to add api key the service. Error ${error.message || error}`)}`);
+        if(error.message.includes('Error Too Many Requests')) {
+          nextAttempt.push(apiKey);
+        }else{
+          throw error;
         }
       }
-      await module.exports.associateRestApiWithUsagePlan(stackName, usagePlan, stage, cfn, ag, serverless.cli);
-    } catch (error) {
-      serverless.cli.consoleLog(`AddApiKey: ${chalk.red(`Failed to add api key the service. Error ${error.message || error}`)}`);
+    }
+
+    todoApiKeys = nextAttempt;
+
+    if(todoApiKeys.length > 0) {
+      const wait = 5000 + (Math.random() * 3000 - 1000);
+      const seconds = Math.floor(wait / 1000);
+      serverless.cli.consoleLog(`AddApiKey: Failed to configure ${todoApiKeys.length} keys, waiting ~${seconds} sec before retrying (${attempt} / ${maxAttempts}).`);
+      await new Promise(r => setTimeout(() => r(), wait));
     }
   }
+
+  if(todoApiKeys.length > 0) {
+    throw new Error(`AddApiKey: Failed to add API key after ${maxAttempts} attempts`);
+  }
+
   results.forEach(result => serverless.cli.consoleLog(`AddApiKey: ${chalk.yellow(`${result.key} - ${result.value}`)}`));
 };
 
